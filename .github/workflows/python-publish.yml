@@ -6,37 +6,17 @@ on:
   release:
     types: [published]
 jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v2
-    - name: Set up Python
-      uses: actions/setup-python@v2
-      with:
-        python-version: 3.8
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r local-requirements.txt
-    - name: Build and publish
-      env:
-        TWINE_USERNAME: ${{ secrets.PYPI_USERNAME }}
-        TWINE_PASSWORD: ${{ secrets.PYPI_PASSWORD }}
-      run: |
-        python setup.py sdist bdist_wheel
-        twine upload dist/*
-
   deploy-conda:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - name: Get conda
-        uses: conda-incubator/setup-miniconda@v2
+        uses: conda-incubator/setup-miniconda@v3
         with:
           python-version: 3.9
-          channels: conda-forge,microsoft
+          channels: microsoft,conda-forge
       - name: Prepare
         run: conda install anaconda-client conda-build conda-verify
       - name: Build and Upload
@@ -45,3 +25,4 @@ jobs:
         run: |
           conda config --set anaconda_upload yes
           conda build --user microsoft .
+          conda build --user microsoft --variant-config-file conda_build_config_asyncio.yaml .
