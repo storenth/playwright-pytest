@@ -13,11 +13,21 @@
 # limitations under the License.
 
 import os
-import re
+from pathlib import Path
 import sys
-from typing import Any, List
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _add_ini(testdir: pytest.Testdir) -> None:
+    testdir.makefile(
+        ".ini",
+        pytest="""
+        [pytest]
+        addopts = -p no:playwright-asyncio
+    """,
+    )
 
 
 def test_default(testdir: pytest.Testdir) -> None:
@@ -391,6 +401,31 @@ def test_xdist(testdir: pytest.Testdir) -> None:
     assert "gw1" in "\n".join(result.outlines)
 
 
+def test_xdist_should_not_print_any_warnings(testdir: pytest.Testdir) -> None:
+    original = os.environ.get("PYTHONWARNINGS")
+    os.environ["PYTHONWARNINGS"] = "always"
+    try:
+        testdir.makepyfile(
+            """
+            import pytest
+
+            def test_default(page):
+                pass
+        """
+        )
+        result = testdir.runpytest(
+            "--numprocesses",
+            "2",
+        )
+        result.assert_outcomes(passed=1)
+        assert "ResourceWarning" not in "".join(result.stderr.lines)
+    finally:
+        if original is not None:
+            os.environ["PYTHONWARNINGS"] = original
+        else:
+            del os.environ["PYTHONWARNINGS"]
+
+
 def test_headed(testdir: pytest.Testdir) -> None:
     testdir.makepyfile(
         """
@@ -415,6 +450,9 @@ def test_invalid_browser_name(testdir: pytest.Testdir) -> None:
 
 
 def test_django(testdir: pytest.Testdir) -> None:
+    # Workaround for https://github.com/pytest-dev/pytest/issues/10651
+    os.environ.setdefault("PYTHONPATH", str(Path(__file__).parent.parent))
+    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "tests.assets.django.settings")
     testdir.makepyfile(
         """
     from django.test import TestCase
@@ -621,47 +659,45 @@ def test_artifacts_new_folder_on_run(
 def test_artifacts_should_store_everything_if_on(testdir: pytest.Testdir) -> None:
     testdir.makepyfile(
         """
-        def test_passing(page):
+        def test_passing(page, output_path):
+            print(f"\\n\\noutput_path = {output_path}\\n\\n")
             assert 2 == page.evaluate("1 + 1")
 
-        def test_failing(page):
+        def test_failing(page, output_path):
+            print(f"\\n\\noutput_path = {output_path}\\n\\n")
             raise Exception("Failed")
     """
     )
-    result = testdir.runpytest("--screenshot", "on", "--video", "on", "--tracing", "on")
+    result = testdir.runpytest(
+        "--screenshot", "on", "--video", "on", "--tracing", "on", "-s"
+    )
     result.assert_outcomes(passed=1, failed=1)
     test_results_dir = os.path.join(testdir.tmpdir, "test-results")
-    expected = [
-        {
-            "name": "test-artifacts-should-store-everything-if-on-py-test-failing-chromium",
-            "children": [
-                {
-                    "name": re.compile(r".*webm"),
-                },
-                {
-                    "name": "test-failed-1.png",
-                },
-                {
-                    "name": "trace.zip",
-                },
-            ],
-        },
-        {
-            "name": "test-artifacts-should-store-everything-if-on-py-test-passing-chromium",
-            "children": [
-                {
-                    "name": re.compile(r".*webm"),
-                },
-                {
-                    "name": "test-finished-1.png",
-                },
-                {
-                    "name": "trace.zip",
-                },
-            ],
-        },
+    _assert_folder_structure(
+        test_results_dir,
+        """
+- test-artifacts-should-store-everything-if-on-py-test-failing-chromium:
+  - test-failed-1.png
+  - trace.zip
+  - video.webm
+- test-artifacts-should-store-everything-if-on-py-test-passing-chromium:
+  - test-finished-1.png
+  - trace.zip
+  - video.webm
+""",
+    )
+    output_path = str(testdir.tmpdir)
+    output_paths = [
+        line[14:] for line in result.outlines if f"output_path = {output_path}" in line
     ]
-    _assert_folder_tree(test_results_dir, expected)
+    assert output_paths == [
+        testdir.tmpdir.join(
+            "test-results/test-artifacts-should-store-everything-if-on-py-test-passing-chromium"
+        ).strpath,
+        testdir.tmpdir.join(
+            "test-results/test-artifacts-should-store-everything-if-on-py-test-failing-chromium"
+        ).strpath,
+    ]
 
 
 def test_artifacts_retain_on_failure(testdir: pytest.Testdir) -> None:
@@ -684,24 +720,15 @@ def test_artifacts_retain_on_failure(testdir: pytest.Testdir) -> None:
     )
     result.assert_outcomes(passed=1, failed=1)
     test_results_dir = os.path.join(testdir.tmpdir, "test-results")
-    expected = [
-        {
-            "name": "test-artifacts-retain-on-failure-py-test-failing-chromium",
-            "children": [
-                {
-                    "name": re.compile(r".*webm"),
-                },
-                {
-                    "name": "test-failed-1.png",
-                },
-                {
-                    "name": "trace.zip",
-                },
-            ],
-        }
-    ]
-    _assert_folder_tree(test_results_dir, expected)
-
+    _assert_folder_structure(
+        test_results_dir,
+        """
+- test-artifacts-retain-on-failure-py-test-failing-chromium:
+  - test-failed-1.png
+  - trace.zip
+  - video.webm
+""",
+    )
 
 def test_artifacts_retain_on_setup_failure(testdir: pytest.Testdir) -> None:
     testdir.makepyfile(
@@ -711,7 +738,6 @@ def test_artifacts_retain_on_setup_failure(testdir: pytest.Testdir) -> None:
         def failed_setup_call(page):
             assert 1 == page.evaluate("1 + 1")
             yield page
-
         def test_failing(page, failed_setup_call):
             assert 2 == page.evaluate("1 + 1")
         """
@@ -726,23 +752,15 @@ def test_artifacts_retain_on_setup_failure(testdir: pytest.Testdir) -> None:
     )
     result.assert_outcomes(errors=1)
     test_results_dir = os.path.join(testdir.tmpdir, "test-results")
-    expected = [
-        {
-            "name": "test-artifacts-retain-on-setup-failure-py-test-failing-chromium",
-            "children": [
-                {
-                    "name": re.compile(r".*webm"),
-                },
-                {
-                    "name": "test-failed-1.png",
-                },
-                {
-                    "name": "trace.zip",
-                },
-            ],
-        }
-    ]
-    _assert_folder_tree(test_results_dir, expected)
+    _assert_folder_structure(
+        test_results_dir,
+        """
+- test-artifacts-retain-on-setup-failure-py-test-failing-chromium:
+  - test-failed-1.png
+  - trace.zip
+  - video.webm
+""",
+    )
 
 
 def test_artifacts_retain_on_teardown_failure(testdir: pytest.Testdir) -> None:
@@ -753,7 +771,6 @@ def test_artifacts_retain_on_teardown_failure(testdir: pytest.Testdir) -> None:
         def failed_teardown_call(page, request):
             yield page
             assert 1 == page.evaluate("1 + 1")
-
         def test_passing(page, failed_teardown_call):
             assert 2 == page.evaluate("1 + 1")
         """
@@ -768,23 +785,15 @@ def test_artifacts_retain_on_teardown_failure(testdir: pytest.Testdir) -> None:
     )
     result.assert_outcomes(passed=1, errors=1)
     test_results_dir = os.path.join(testdir.tmpdir, "test-results")
-    expected = [
-        {
-            "name": "test-artifacts-retain-on-teardown-failure-py-test-passing-chromium",
-            "children": [
-                {
-                    "name": re.compile(r".*webm"),
-                },
-                {
-                    "name": "test-failed-1.png",
-                },
-                {
-                    "name": "trace.zip",
-                },
-            ],
-        }
-    ]
-    _assert_folder_tree(test_results_dir, expected)
+    _assert_folder_structure(
+        test_results_dir,
+        """
+- test-artifacts-retain-on-teardown-failure-py-test-passing-chromium:
+  - test-failed-1.png
+  - trace.zip
+  - video.webm
+""",
+    )
 
 
 def test_empty_artifacts_on_teardown(testdir: pytest.Testdir) -> None:
@@ -792,11 +801,10 @@ def test_empty_artifacts_on_teardown(testdir: pytest.Testdir) -> None:
         """
         import pytest
         @pytest.fixture
-        def failed_teardown_call(page, request):
+        def passed_teardown_call(page, request):
             yield page
             assert 2 == page.evaluate("1 + 1")
-
-        def test_passing(page, failed_teardown_call):
+        def test_passing(page, passed_teardown_call):
             assert 2 == page.evaluate("1 + 1")
         """
     )
@@ -809,25 +817,8 @@ def test_empty_artifacts_on_teardown(testdir: pytest.Testdir) -> None:
         "retain-on-failure",
     )
     result.assert_outcomes(passed=1)
-    test_results_dir = os.path.join(testdir.tmpdir, "test-results")
-    expected = [
-        {
-            "name": "test-empty-artifacts-on-teardown-py-test-passing-chromium",
-            "children": [
-                {
-                    "name": re.compile(r".*webm"),
-                },
-                {
-                    "name": "test-failed-1.png",
-                },
-                {
-                    "name": "trace.zip",
-                },
-            ],
-        }
-    ]
-    with pytest.raises(FileNotFoundError):
-        _assert_folder_tree(test_results_dir, expected)
+    for dir in testdir.tmpdir.listdir():
+        assert dir.basename != "test-results"
 
 
 def test_should_work_with_test_names_which_exceeds_256_characters(
@@ -843,34 +834,38 @@ def test_should_work_with_test_names_which_exceeds_256_characters(
     result = testdir.runpytest("--tracing", "on")
     result.assert_outcomes(passed=1, failed=0)
     test_results_dir = os.path.join(testdir.tmpdir, "test-results")
-    expected = [
-        {
-            "name": "test-should-work-with-test-names-which-exceeds-256-characters-py-test-abcdefghijklmnopqrstuvwxyzabcd-23f2441-nopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz-chromium/",
-            "children": [
-                {
-                    "name": "trace.zip",
-                },
-            ],
-        },
-    ]
-    _assert_folder_tree(test_results_dir, expected)
+    _assert_folder_structure(
+        test_results_dir,
+        """
+- test-should-work-with-test-names-which-exceeds-256-characters-py-test-abcdefghijklmnopqrstuvwxyzabcd-23f2441-nopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz-chromium:
+  - trace.zip
+""",
+    )
 
 
-def _assert_folder_tree(root: str, expected_tree: List[Any]) -> None:
-    assert len(os.listdir(root)) == len(expected_tree)
-    for file in expected_tree:
-        if isinstance(file["name"], str):
-            if "children" in file:
-                print(f"{file=}")
-                assert os.path.isdir(os.path.join(root, file["name"]))
-            else:
-                print(f"{file=}")
-                assert os.path.isfile(os.path.join(root, file["name"]))
-        if isinstance(file["name"], re.Pattern):
-            assert any([file["name"].match(item) for item in os.listdir(root)])
-            assert "children" not in file
-        if "children" in file:
-            _assert_folder_tree(os.path.join(root, file["name"]), file["children"])
+def _make_folder_list(root: str, level: int = 0) -> str:
+    if not os.path.exists(root):
+        return ""
+    tree = []
+    for entry in sorted(os.scandir(root), key=lambda e: e.name):
+        prefix = f"{'  ' * level}- "
+        if entry.is_dir():
+            tree.append(f"{prefix}{entry.name}:\n")
+            tree.append(_make_folder_list(entry.path, level + 1))
+        else:
+            tree.append(f"{prefix}{entry.name}\n")
+    return "".join(tree)
+
+
+def _assert_folder_structure(root: str, expected: str) -> None:
+    __tracebackhide__ = True
+    actual = _make_folder_list(root)
+    if actual.strip() != expected.strip():
+        print("Actual:")
+        print(actual)
+        print("Expected:")
+        print(expected)
+        raise AssertionError("Actual tree does not match expected tree")
 
 
 def test_is_able_to_set_expect_timeout_via_conftest(testdir: pytest.Testdir) -> None:
@@ -893,3 +888,187 @@ def test_is_able_to_set_expect_timeout_via_conftest(testdir: pytest.Testdir) -> 
     result.assert_outcomes(passed=0, failed=1, skipped=0)
     result.stdout.fnmatch_lines("*AssertionError: Locator expected to be visible*")
     result.stdout.fnmatch_lines("*LocatorAssertions.to_be_visible with timeout 1111ms*")
+
+
+def test_artifact_collection_should_work_for_manually_created_contexts_keep_open(
+    testdir: pytest.Testdir,
+) -> None:
+    testdir.makepyfile(
+        """
+        import pytest
+        from pytest_playwright.pytest_playwright import CreateContextCallback
+
+        def test_artifact_collection(browser, page, new_context: CreateContextCallback):
+            page.goto("data:text/html,<div>hello</div>")
+
+            other_context = new_context()
+            other_context_page = other_context.new_page()
+            other_context_page.goto("data:text/html,<div>hello</div>")
+        """
+    )
+    result = testdir.runpytest("--screenshot", "on", "--video", "on", "--tracing", "on")
+    result.assert_outcomes(passed=1)
+    test_results_dir = os.path.join(testdir.tmpdir, "test-results")
+    _assert_folder_structure(
+        test_results_dir,
+        """
+- test-artifact-collection-should-work-for-manually-created-contexts-keep-open-py-test-artifact-collection-chromium:
+  - test-finished-1.png
+  - test-finished-2.png
+  - trace-1.zip
+  - trace-2.zip
+  - video-1.webm
+  - video-2.webm
+""",
+    )
+
+
+def test_artifact_collection_should_work_for_manually_created_contexts_get_closed(
+    testdir: pytest.Testdir,
+) -> None:
+    testdir.makepyfile(
+        """
+        import pytest
+
+        def test_artifact_collection(browser, page, new_context):
+            page.goto("data:text/html,<div>hello</div>")
+
+            other_context = new_context()
+            other_context_page = other_context.new_page()
+            other_context_page.goto("data:text/html,<div>hello</div>")
+            other_context_page.evaluate("new Promise(fulfill => requestAnimationFrame(() => requestAnimationFrame(fulfill)))")
+            other_context.close()
+        """
+    )
+    result = testdir.runpytest("--video", "on", "--tracing", "on")
+    result.assert_outcomes(passed=1)
+    test_results_dir = os.path.join(testdir.tmpdir, "test-results")
+    _assert_folder_structure(
+        test_results_dir,
+        """
+- test-artifact-collection-should-work-for-manually-created-contexts-get-closed-py-test-artifact-collection-chromium:
+  - trace-1.zip
+  - trace-2.zip
+  - video-1.webm
+  - video-2.webm
+""",
+    )
+
+
+def test_artifact_collection_should_work_for_manually_created_contexts_retain_on_failure_failed(
+    testdir: pytest.Testdir,
+) -> None:
+    testdir.makepyfile(
+        """
+        import pytest
+
+        def test_artifact_collection(browser, page, new_context):
+            page.goto("data:text/html,<div>hello</div>")
+
+            other_context = new_context()
+            other_context_page = other_context.new_page()
+            other_context_page.goto("data:text/html,<div>hello</div>")
+
+            raise Exception("Failed")
+        """
+    )
+    result = testdir.runpytest(
+        "--video", "retain-on-failure", "--tracing", "retain-on-failure"
+    )
+    result.assert_outcomes(failed=1)
+    test_results_dir = os.path.join(testdir.tmpdir, "test-results")
+    _assert_folder_structure(
+        test_results_dir,
+        """
+- test-artifact-collection-should-work-for-manually-created-contexts-retain-on-failure-failed-py-test-artifact-collection-chromium:
+  - trace-1.zip
+  - trace-2.zip
+  - video-1.webm
+  - video-2.webm
+""",
+    )
+
+
+def test_artifact_collection_should_work_for_manually_created_contexts_retain_on_failure_pass(
+    testdir: pytest.Testdir,
+) -> None:
+    testdir.makepyfile(
+        """
+        import pytest
+
+        def test_artifact_collection(browser, page, new_context):
+            page.goto("data:text/html,<div>hello</div>")
+
+            other_context = new_context()
+            other_context_page = other_context.new_page()
+            other_context_page.goto("data:text/html,<div>hello</div>")
+        """
+    )
+    result = testdir.runpytest(
+        "--video", "retain-on-failure", "--tracing", "retain-on-failure"
+    )
+    result.assert_outcomes(passed=1)
+    test_results_dir = os.path.join(testdir.tmpdir, "test-results")
+    _assert_folder_structure(test_results_dir, "")
+
+
+def test_new_context_allow_passing_args(
+    testdir: pytest.Testdir,
+) -> None:
+    testdir.makepyfile(
+        """
+        import pytest
+
+        def test_artifact_collection(new_context):
+            context1 = new_context(user_agent="agent1")
+            page1 = context1.new_page()
+            assert page1.evaluate("window.navigator.userAgent") == "agent1"
+            context1.close()
+
+            context2 = new_context(user_agent="agent2")
+            page2 = context2.new_page()
+            assert page2.evaluate("window.navigator.userAgent") == "agent2"
+            context2.close()
+            """
+    )
+    result = testdir.runpytest()
+    result.assert_outcomes(passed=1)
+
+
+def test_output_path_via_pytest_runtest_makereport_hook(
+    testdir: pytest.Testdir,
+) -> None:
+    testdir.makeconftest(
+        """
+import pytest
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    outcome = yield
+    report = outcome.get_result()
+
+    if report.when == "call":
+        output_path = item.funcargs.get("output_path")
+        print("\\n\\noutput_path = {}".format(output_path))
+"""
+    )
+
+    testdir.makepyfile(
+        """
+def test_without_output_path():
+    pass
+
+def test_with_page(page):
+    pass
+"""
+    )
+
+    result = testdir.runpytest("--screenshot", "on", "-s")
+    result.assert_outcomes(passed=2)
+    output_paths = [line[14:] for line in result.outlines if "output_path = " in line]
+    assert output_paths == [
+        "None",
+        testdir.tmpdir.join(
+            "test-results/test-output-path-via-pytest-runtest-makereport-hook-py-test-with-page-chromium"
+        ).strpath,
+    ]
