@@ -231,7 +231,27 @@ async def _artifacts_recorder(
     yield artifacts_recorder
     # If request.node is missing rep_call, then some error happened during execution
     # that prevented teardown, but should still be counted as a failure
-    failed = request.node.rep_call.failed if hasattr(request.node, "rep_call") else True
+    failed_setup = (
+        request.node.rep_setup.failed if hasattr(request.node, "rep_setup") else False
+    )
+    failed_call = (
+        request.node.rep_call.failed if hasattr(request.node, "rep_call") else False
+    )
+
+    passed_setup = (
+        request.node.rep_setup.passed if hasattr(request.node, "rep_setup") else False
+    )
+    passed_call = (
+        request.node.rep_call.passed if hasattr(request.node, "rep_call") else False
+    )
+
+    failed_teardown = False
+
+    if (passed_setup or passed_call) and not (failed_setup or failed_call):
+        if request.node.teardown_exceptions:
+            failed_teardown = True
+
+    failed = failed_setup or failed_call or failed_teardown
     await artifacts_recorder.did_finish_test(failed)
 
 
