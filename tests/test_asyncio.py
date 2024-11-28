@@ -756,6 +756,104 @@ def test_artifacts_retain_on_failure(testdir: pytest.Testdir) -> None:
 """,
     )
 
+def test_artifacts_retain_on_setup_failure(testdir: pytest.Testdir) -> None:
+    testdir.makepyfile(
+        """
+        import pytest
+        import pytest_asyncio
+        @pytest_asyncio.fixture(loop_scope="session")
+        async def failed_setup_call(page):
+            assert 1 == await page.evaluate("1 + 1")
+            yield page
+
+        @pytest.mark.asyncio
+        async def test_failing(page, failed_setup_call):
+            assert 2 == await page.evaluate("1 + 1")
+        """
+    )
+    result = testdir.runpytest(
+        "--screenshot",
+        "only-on-failure",
+        "--video",
+        "retain-on-failure",
+        "--tracing",
+        "retain-on-failure",
+    )
+    result.assert_outcomes(errors=1)
+    test_results_dir = os.path.join(testdir.tmpdir, "test-results")
+    _assert_folder_structure(
+        test_results_dir,
+        """
+- test-artifacts-retain-on-setup-failure-py-test-failing-chromium:
+  - test-failed-1.png
+  - trace.zip
+  - video.webm
+""",
+    )
+
+
+def test_artifacts_retain_on_teardown_failure(testdir: pytest.Testdir) -> None:
+    testdir.makepyfile(
+        """
+        import pytest
+        import pytest_asyncio
+        @pytest_asyncio.fixture(loop_scope="session")
+        async def failed_teardown_call(page, request):
+            yield page
+            assert 1 == await page.evaluate("1 + 1")
+
+        @pytest.mark.asyncio
+        async def test_passing(page, failed_teardown_call):
+            assert 2 == await page.evaluate("1 + 1")
+        """
+    )
+    result = testdir.runpytest(
+        "--screenshot",
+        "only-on-failure",
+        "--video",
+        "retain-on-failure",
+        "--tracing",
+        "retain-on-failure",
+    )
+    result.assert_outcomes(passed=1, errors=1)
+    test_results_dir = os.path.join(testdir.tmpdir, "test-results")
+    _assert_folder_structure(
+        test_results_dir,
+        """
+- test-artifacts-retain-on-teardown-failure-py-test-passing-chromium:
+  - test-failed-1.png
+  - trace.zip
+  - video.webm
+""",
+    )
+
+
+def test_empty_artifacts_on_teardown(testdir: pytest.Testdir) -> None:
+    testdir.makepyfile(
+        """
+        import pytest
+        import pytest_asyncio
+        @pytest_asyncio.fixture(loop_scope="session")
+        async def passed_teardown_call(page, request):
+            yield page
+            assert 2 == await page.evaluate("1 + 1")
+        
+        @pytest.mark.asyncio
+        async def test_passing(page, passed_teardown_call):
+            assert 2 == await page.evaluate("1 + 1")
+        """
+    )
+    result = testdir.runpytest(
+        "--screenshot",
+        "only-on-failure",
+        "--video",
+        "retain-on-failure",
+        "--tracing",
+        "retain-on-failure",
+    )
+    result.assert_outcomes(passed=1)
+    for dir in testdir.tmpdir.listdir():
+        assert dir.basename != "test-results"
 
 def test_should_work_with_test_names_which_exceeds_256_characters(
     testdir: pytest.Testdir,
